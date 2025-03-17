@@ -126,6 +126,8 @@
         
         <div class="info">
             This app authenticates with Bluesky using the OAuth 2.0 protocol with DPoP, retrieves your access token, and displays the decoded JWT information.
+            <br><br>
+            <strong>Note:</strong> Due to CORS limitations with direct API calls from browsers, this implementation demonstrates the OAuth flow up to the redirect back from Bluesky. A full implementation would require a proxy or backend server to complete the token exchange step.
         </div>
         
         <div id="login-section">
@@ -602,61 +604,34 @@
                 
                 const tokenEndpoint = authServerMetadata.token_endpoint;
                 
-                // First make a simple fetch to get the nonce
-                console.log("Making initial request to get fresh DPoP nonce");
-                const nonceRequest = await fetch(tokenEndpoint, {
-                    method: 'OPTIONS'
-                });
+                // Skip the OPTIONS request which causes CORS errors
+                console.log("Creating DPoP proof without pre-fetching nonce");
                 
-                // Extract the nonce from the response headers
-                const freshNonce = nonceRequest.headers.get('DPoP-Nonce');
-                console.log("Received fresh nonce:", freshNonce);
+                // Create DPoP proof without nonce for the first attempt
+                const initialProof = await createDPoPProof(tokenEndpoint, 'POST');
                 
-                if (!freshNonce) {
-                    console.warn("Could not get DPoP nonce from OPTIONS request, trying a POST");
-                    
-                    // Try a different approach if OPTIONS didn't work
-                    const emptyPost = await fetch(tokenEndpoint, {
+                // Make the token request
+                console.log("Making token request");
+                let tokenResponse;
+                try {
+                    tokenResponse = await fetch(tokenEndpoint, {
                         method: 'POST',
                         headers: {
-                            'Content-Type': 'application/x-www-form-urlencoded'
+                            'Content-Type': 'application/x-www-form-urlencoded',
+                            'DPoP': initialProof
                         },
                         body: new URLSearchParams({
-                            'grant_type': 'authorization_code'
+                            'grant_type': 'authorization_code',
+                            'code': code,
+                            'redirect_uri': REDIRECT_URI,
+                            'client_id': CLIENT_ID,
+                            'code_verifier': codeVerifier
                         })
                     });
-                    
-                    const newNonce = emptyPost.headers.get('DPoP-Nonce');
-                    console.log("Received nonce from POST:", newNonce);
-                    
-                    if (!newNonce) {
-                        console.error("Could not retrieve DPoP nonce from server");
-                    } else {
-                        dpopNonce = newNonce;
-                    }
-                } else {
-                    dpopNonce = freshNonce;
+                } catch (fetchError) {
+                    console.error("Fetch error:", fetchError);
+                    throw new Error(`Network error during token request: ${fetchError.message}. This is likely a CORS issue. Please check browser console for more details.`);
                 }
-                
-                // Create DPoP proof with the fresh nonce
-                const dpopProof = await createDPoPProof(tokenEndpoint, 'POST', dpopNonce);
-                console.log("Created DPoP proof with nonce:", dpopNonce);
-                
-                // Token request with DPoP nonce 
-                let tokenResponse = await fetch(tokenEndpoint, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/x-www-form-urlencoded',
-                        'DPoP': dpopProof
-                    },
-                    body: new URLSearchParams({
-                        'grant_type': 'authorization_code',
-                        'code': code,
-                        'redirect_uri': REDIRECT_URI,
-                        'client_id': CLIENT_ID,
-                        'code_verifier': codeVerifier
-                    })
-                });
                 
                 if (!tokenResponse.ok) {
                     // Try to parse the error response
