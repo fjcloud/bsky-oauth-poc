@@ -610,8 +610,8 @@
                 // Create DPoP proof for token request
                 const dpopProof = await createDPoPProof(tokenEndpoint, 'POST', dpopNonce);
                 
-                // Token request
-                const tokenResponse = await fetch(tokenEndpoint, {
+                // Token request with DPoP nonce handling
+                let tokenResponse = await fetch(tokenEndpoint, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/x-www-form-urlencoded',
@@ -625,6 +625,41 @@
                         'code_verifier': codeVerifier
                     })
                 });
+                
+                // Handle DPoP nonce error and retry
+                if (tokenResponse.status === 401) {
+                    const errorData = await tokenResponse.json();
+                    console.log("Token request response:", errorData);
+                    
+                    if (errorData.error === 'use_dpop_nonce') {
+                        // Get the new nonce from the response headers
+                        const newNonce = tokenResponse.headers.get('DPoP-Nonce');
+                        console.log("Server requires DPoP nonce. Using new nonce:", newNonce);
+                        
+                        if (newNonce) {
+                            // Create a new DPoP proof with the new nonce
+                            const newDpopProof = await createDPoPProof(tokenEndpoint, 'POST', newNonce);
+                            
+                            // Retry the request with the new nonce
+                            tokenResponse = await fetch(tokenEndpoint, {
+                                method: 'POST',
+                                headers: {
+                                    'Content-Type': 'application/x-www-form-urlencoded',
+                                    'DPoP': newDpopProof
+                                },
+                                body: new URLSearchParams({
+                                    'grant_type': 'authorization_code',
+                                    'code': code,
+                                    'redirect_uri': REDIRECT_URI,
+                                    'client_id': CLIENT_ID,
+                                    'code_verifier': codeVerifier
+                                })
+                            });
+                        } else {
+                            throw new Error("Server requires DPoP nonce but none was provided in the response");
+                        }
+                    }
+                }
                 
                 if (!tokenResponse.ok) {
                     const errorText = await tokenResponse.text();
