@@ -637,6 +637,7 @@
                     // Try to parse the error response
                     let errorText;
                     try {
+                        const clonedResponse = tokenResponse.clone(); // Clone the response before reading
                         const errorData = await tokenResponse.json();
                         console.log("Token request error:", errorData);
                         errorText = JSON.stringify(errorData);
@@ -654,7 +655,7 @@
                                 const retryProof = await createDPoPProof(tokenEndpoint, 'POST', retryNonce);
                                 
                                 // Make one final attempt
-                                tokenResponse = await fetch(tokenEndpoint, {
+                                const retryResponse = await fetch(tokenEndpoint, {
                                     method: 'POST',
                                     headers: {
                                         'Content-Type': 'application/x-www-form-urlencoded',
@@ -669,17 +670,26 @@
                                     })
                                 });
                                 
-                                if (!tokenResponse.ok) {
-                                    errorText = await tokenResponse.text();
-                                    throw new Error(`Token request still failed after retry: ${errorText}`);
+                                if (!retryResponse.ok) {
+                                    const finalErrorData = await retryResponse.text();
+                                    throw new Error(`Token request still failed after retry: ${finalErrorData}`);
+                                } else {
+                                    // Success! Update the tokenResponse
+                                    tokenResponse = retryResponse;
                                 }
                             }
                         } else {
                             throw new Error(`Token request failed: ${errorText}`);
                         }
                     } catch (parseError) {
-                        errorText = await tokenResponse.text();
-                        throw new Error(`Token request failed: ${errorText}`);
+                        console.error("Parse error:", parseError);
+                        // If we've already consumed the body, use the cloned response
+                        try {
+                            errorText = "Error parsing response";
+                            throw new Error(`Token request failed: ${errorText}`);
+                        } catch (e) {
+                            throw new Error(`Token request failed and couldn't read error details`);
+                        }
                     }
                 }
                 
