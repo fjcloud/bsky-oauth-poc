@@ -1,0 +1,19 @@
+{
+  "client_id": "https://oauth.msl.cloud/oauth/client-metadata.json",
+  "application_type": "web",
+  "grant_types": [
+    "authorization_code",
+    "refresh_token"
+  ],
+  "scope": "atproto",
+  "response_types": [
+    "code"
+  ],
+  "redirect_uris": [
+    "https://oauth.msl.cloud/index.html"
+  ],
+  "dpop_bound_access_tokens": true,
+  "token_endpoint_auth_method": "none",
+  "client_name": "Your Bluesky App Name",
+  "client_uri": "https://oauth.msl.cloud"
+}
