@@ -602,15 +602,47 @@
                 
                 const tokenEndpoint = authServerMetadata.token_endpoint;
                 
-                // Fallback to using a new nonce if we don't have one
-                if (!dpopNonce) {
-                    console.log("No stored nonce found, proceeding without it");
+                // First make a simple fetch to get the nonce
+                console.log("Making initial request to get fresh DPoP nonce");
+                const nonceRequest = await fetch(tokenEndpoint, {
+                    method: 'OPTIONS'
+                });
+                
+                // Extract the nonce from the response headers
+                const freshNonce = nonceRequest.headers.get('DPoP-Nonce');
+                console.log("Received fresh nonce:", freshNonce);
+                
+                if (!freshNonce) {
+                    console.warn("Could not get DPoP nonce from OPTIONS request, trying a POST");
+                    
+                    // Try a different approach if OPTIONS didn't work
+                    const emptyPost = await fetch(tokenEndpoint, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/x-www-form-urlencoded'
+                        },
+                        body: new URLSearchParams({
+                            'grant_type': 'authorization_code'
+                        })
+                    });
+                    
+                    const newNonce = emptyPost.headers.get('DPoP-Nonce');
+                    console.log("Received nonce from POST:", newNonce);
+                    
+                    if (!newNonce) {
+                        console.error("Could not retrieve DPoP nonce from server");
+                    } else {
+                        dpopNonce = newNonce;
+                    }
+                } else {
+                    dpopNonce = freshNonce;
                 }
                 
-                // Create DPoP proof for token request
+                // Create DPoP proof with the fresh nonce
                 const dpopProof = await createDPoPProof(tokenEndpoint, 'POST', dpopNonce);
+                console.log("Created DPoP proof with nonce:", dpopNonce);
                 
-                // Token request with DPoP nonce handling
+                // Token request with DPoP nonce 
                 let tokenResponse = await fetch(tokenEndpoint, {
                     method: 'POST',
                     headers: {
@@ -626,38 +658,53 @@
                     })
                 });
                 
-                // Handle DPoP nonce error and retry
-                if (tokenResponse.status === 401) {
-                    const errorData = await tokenResponse.json();
-                    console.log("Token request response:", errorData);
-                    
-                    if (errorData.error === 'use_dpop_nonce') {
-                        // Get the new nonce from the response headers
-                        const newNonce = tokenResponse.headers.get('DPoP-Nonce');
-                        console.log("Server requires DPoP nonce. Using new nonce:", newNonce);
+                if (!tokenResponse.ok) {
+                    // Try to parse the error response
+                    let errorText;
+                    try {
+                        const errorData = await tokenResponse.json();
+                        console.log("Token request error:", errorData);
+                        errorText = JSON.stringify(errorData);
                         
-                        if (newNonce) {
-                            // Create a new DPoP proof with the new nonce
-                            const newDpopProof = await createDPoPProof(tokenEndpoint, 'POST', newNonce);
+                        // If it's specifically a nonce error, try one more time with explicit error handling
+                        if (errorData.error === 'use_dpop_nonce') {
+                            console.log("Still getting nonce error, trying one more approach");
                             
-                            // Retry the request with the new nonce
-                            tokenResponse = await fetch(tokenEndpoint, {
-                                method: 'POST',
-                                headers: {
-                                    'Content-Type': 'application/x-www-form-urlencoded',
-                                    'DPoP': newDpopProof
-                                },
-                                body: new URLSearchParams({
-                                    'grant_type': 'authorization_code',
-                                    'code': code,
-                                    'redirect_uri': REDIRECT_URI,
-                                    'client_id': CLIENT_ID,
-                                    'code_verifier': codeVerifier
-                                })
-                            });
+                            // Try to get the new nonce from the response headers
+                            const retryNonce = tokenResponse.headers.get('DPoP-Nonce');
+                            console.log("Received retry nonce:", retryNonce);
+                            
+                            if (retryNonce) {
+                                // Create a new DPoP proof with the retry nonce
+                                const retryProof = await createDPoPProof(tokenEndpoint, 'POST', retryNonce);
+                                
+                                // Make one final attempt
+                                tokenResponse = await fetch(tokenEndpoint, {
+                                    method: 'POST',
+                                    headers: {
+                                        'Content-Type': 'application/x-www-form-urlencoded',
+                                        'DPoP': retryProof
+                                    },
+                                    body: new URLSearchParams({
+                                        'grant_type': 'authorization_code',
+                                        'code': code,
+                                        'redirect_uri': REDIRECT_URI,
+                                        'client_id': CLIENT_ID,
+                                        'code_verifier': codeVerifier
+                                    })
+                                });
+                                
+                                if (!tokenResponse.ok) {
+                                    errorText = await tokenResponse.text();
+                                    throw new Error(`Token request still failed after retry: ${errorText}`);
+                                }
+                            }
                         } else {
-                            throw new Error("Server requires DPoP nonce but none was provided in the response");
+                            throw new Error(`Token request failed: ${errorText}`);
                         }
+                    } catch (parseError) {
+                        errorText = await tokenResponse.text();
+                        throw new Error(`Token request failed: ${errorText}`);
                     }
                 }
                 
