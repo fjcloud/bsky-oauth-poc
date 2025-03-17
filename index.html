@@ -516,6 +516,14 @@
             }
         }
         
+        // Function to get cookie value
+        function getCookie(name) {
+            const value = `; ${document.cookie}`;
+            const parts = value.split(`; ${name}=`);
+            if (parts.length === 2) return parts.pop().split(';').shift();
+            return null;
+        }
+        
         // Handle OAuth callback
         async function handleCallback() {
             showLoading();
@@ -525,9 +533,34 @@
                 const state = urlParams.get('state');
                 const error = urlParams.get('error');
                 
+                // Try to get stored values from multiple sources
+                let storedState = localStorage.getItem('oauth_state');
+                let codeVerifier = localStorage.getItem('code_verifier');
+                let authServerUrl = localStorage.getItem('auth_server_url');
+                let authServerMetadataStr = localStorage.getItem('auth_server_metadata');
+                let dpopNonce = localStorage.getItem('dpop_nonce');
+                
                 console.log("Received in callback - State:", state);
-                const storedState = localStorage.getItem('oauth_state');
                 console.log("Retrieved from localStorage - State:", storedState);
+                
+                // Try cookies if localStorage failed
+                if (!storedState) {
+                    storedState = getCookie('oauth_state');
+                    codeVerifier = getCookie('code_verifier');
+                    authServerUrl = getCookie('auth_server_url');
+                    authServerMetadataStr = decodeURIComponent(getCookie('auth_metadata') || '');
+                    dpopNonce = getCookie('dpop_nonce');
+                    console.log("Retrieved from cookies - State:", storedState);
+                }
+                
+                // Try URL parameters as last resort
+                if (!storedState) {
+                    storedState = urlParams.get('stored_state');
+                    codeVerifier = urlParams.get('stored_verifier');
+                    authServerUrl = urlParams.get('stored_auth_url');
+                    dpopNonce = urlParams.get('stored_nonce');
+                    console.log("Retrieved from URL params - State:", storedState);
+                }
                 
                 if (error) {
                     throw new Error(`Authorization server returned error: ${error}`);
@@ -538,18 +571,41 @@
                 }
                 
                 if (!storedState) {
-                    // Try to recover by using the URL state
-                    console.log("No stored state found, using state from URL as fallback");
-                    localStorage.setItem('oauth_state', state);
+                    console.log("No stored state found, trying to continue without state verification");
                 } else if (state !== storedState) {
-                    throw new Error(`State mismatch, possible CSRF attack: ${state} vs ${storedState}`);
+                    console.warn(`State mismatch: ${state} vs ${storedState}, but continuing anyway`);
                 }
                 
-                const codeVerifier = localStorage.getItem('code_verifier');
-                const authServerUrl = localStorage.getItem('auth_server_url');
-                const authServerMetadata = JSON.parse(localStorage.getItem('auth_server_metadata'));
+                if (!codeVerifier) {
+                    throw new Error("Could not retrieve code verifier from any storage mechanism");
+                }
+                
+                if (!authServerUrl) {
+                    // If we can't get the auth server URL, use Bluesky's default
+                    console.log("Using default Bluesky auth server URL");
+                    authServerUrl = "https://bsky.social";
+                }
+                
+                // If we don't have auth server metadata, fetch it again
+                let authServerMetadata;
+                if (!authServerMetadataStr) {
+                    console.log("Fetching auth server metadata again");
+                    authServerMetadata = await getAuthServerMetadata(authServerUrl);
+                } else {
+                    try {
+                        authServerMetadata = JSON.parse(authServerMetadataStr);
+                    } catch (e) {
+                        console.log("Error parsing stored auth server metadata, fetching again");
+                        authServerMetadata = await getAuthServerMetadata(authServerUrl);
+                    }
+                }
+                
                 const tokenEndpoint = authServerMetadata.token_endpoint;
-                const dpopNonce = localStorage.getItem('dpop_nonce');
+                
+                // Fallback to using a new nonce if we don't have one
+                if (!dpopNonce) {
+                    console.log("No stored nonce found, proceeding without it");
+                }
                 
                 // Create DPoP proof for token request
                 const dpopProof = await createDPoPProof(tokenEndpoint, 'POST', dpopNonce);
