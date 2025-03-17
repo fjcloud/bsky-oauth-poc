@@ -205,9 +205,15 @@
             return Array.from(array, byte => byte.toString(16).padStart(2, '0')).join('');
         }
         
-        // Base64 URL encode a string
-        function base64UrlEncode(str) {
-            return btoa(String.fromCharCode.apply(null, new Uint8Array(str)))
+        // Base64 URL encode a string or buffer
+        function base64UrlEncode(input) {
+            let str;
+            if (input instanceof ArrayBuffer || input instanceof Uint8Array) {
+                str = String.fromCharCode.apply(null, new Uint8Array(input));
+            } else {
+                str = input;
+            }
+            return btoa(str)
                 .replace(/\+/g, '-')
                 .replace(/\//g, '_')
                 .replace(/=+$/, '');
@@ -239,69 +245,78 @@
             }
         }
         
-        // Create DPoP keypair
-        async function generateDPoPKeypair() {
-            return await crypto.subtle.generateKey(
-                {
-                    name: 'ECDSA',
-                    namedCurve: 'P-256'
-                },
-                false, // non-extractable
-                ['sign', 'verify']
-            );
+        // Create and store DPoP proof for a request
+        async function createDPoPProof(url, method, nonce = null, accessToken = null) {
+            try {
+                // Generate a key pair for this request
+                const keyPair = await crypto.subtle.generateKey(
+                    {
+                        name: 'ECDSA',
+                        namedCurve: 'P-256'
+                    },
+                    true, // extractable
+                    ['sign', 'verify']
+                );
+                
+                // Export public key to JWK format
+                const publicKeyJwk = await crypto.subtle.exportKey('jwk', keyPair.publicKey);
+                
+                // Create DPoP header
+                const header = {
+                    typ: 'dpop+jwt',
+                    alg: 'ES256',
+                    jwk: publicKeyJwk
+                };
+                
+                // Create payload
+                const payload = {
+                    jti: generateRandomString(32),
+                    htm: method,
+                    htu: url,
+                    iat: Math.floor(Date.now() / 1000)
+                };
+                
+                // Add nonce if provided
+                if (nonce) {
+                    payload.nonce = nonce;
+                }
+                
+                // Add access token hash if provided
+                if (accessToken) {
+                    const tokenHash = await sha256(accessToken);
+                    payload.ath = base64UrlEncode(tokenHash);
+                }
+                
+                // Encode header and payload
+                const encodedHeader = base64UrlEncode(JSON.stringify(header));
+                const encodedPayload = base64UrlEncode(JSON.stringify(payload));
+                
+                // Prepare message to sign
+                const message = `${encodedHeader}.${encodedPayload}`;
+                const messageBytes = new TextEncoder().encode(message);
+                
+                // Sign the message
+                const signature = await crypto.subtle.sign(
+                    {
+                        name: 'ECDSA',
+                        hash: { name: 'SHA-256' }
+                    },
+                    keyPair.privateKey,
+                    messageBytes
+                );
+                
+                // Encode signature
+                const encodedSignature = base64UrlEncode(signature);
+                
+                // Return the complete JWT
+                return `${message}.${encodedSignature}`;
+            } catch (error) {
+                console.error('Error creating DPoP proof:', error);
+                throw error;
+            }
         }
         
-        // Create DPoP JWT
-        async function createDPoPJWT(keypair, url, method, nonce = null, accessToken = null) {
-            // Export public key to JWK
-            const publicKey = await crypto.subtle.exportKey('jwk', keypair.publicKey);
-            
-            // Create header
-            const header = {
-                typ: 'dpop+jwt',
-                alg: 'ES256',
-                jwk: publicKey
-            };
-            
-            // Create payload
-            const payload = {
-                jti: generateRandomString(32),
-                htm: method,
-                htu: url,
-                iat: Math.floor(Date.now() / 1000)
-            };
-            
-            // Add nonce if provided
-            if (nonce) {
-                payload.nonce = nonce;
-            }
-            
-            // Add access token hash if provided
-            if (accessToken) {
-                const tokenHash = await sha256(accessToken);
-                payload.ath = base64UrlEncode(tokenHash);
-            }
-            
-            // Encode header and payload
-            const encodedHeader = base64UrlEncode(new TextEncoder().encode(JSON.stringify(header)));
-            const encodedPayload = base64UrlEncode(new TextEncoder().encode(JSON.stringify(payload)));
-            
-            const dataToSign = `${encodedHeader}.${encodedPayload}`;
-            
-            // Sign data
-            const signature = await crypto.subtle.sign(
-                { name: 'ECDSA', hash: 'SHA-256' },
-                keypair.privateKey,
-                new TextEncoder().encode(dataToSign)
-            );
-            
-            // Convert signature to base64url
-            const base64Signature = base64UrlEncode(signature);
-            
-            return `${dataToSign}.${base64Signature}`;
-        }
-        
-        // Resolve Bluesky handle to get PDS information
+        // Resolve Bluesky handle to get DID
         async function resolveHandle(handle) {
             try {
                 const response = await fetch(`https://bsky.social/xrpc/com.atproto.identity.resolveHandle?handle=${handle}`);
@@ -397,14 +412,6 @@
                 
                 const codeChallenge = base64UrlEncode(await sha256(codeVerifier));
                 
-                // Generate DPoP keypair
-                const keypair = await generateDPoPKeypair();
-                // Store keypair (in practice, this needs better security)
-                const publicKeyJwk = await crypto.subtle.exportKey('jwk', keypair.publicKey);
-                const privateKeyJwk = await crypto.subtle.exportKey('jwk', keypair.privateKey);
-                sessionStorage.setItem('dpop_keypair_public', JSON.stringify(publicKeyJwk));
-                sessionStorage.setItem('dpop_keypair_private', JSON.stringify(privateKeyJwk));
-                
                 // Resolve handle to get DID
                 const did = await resolveHandle(handle);
                 sessionStorage.setItem('user_did', did);
@@ -430,9 +437,8 @@
                 // Get PAR endpoint
                 const parEndpoint = authServerMetadata.pushed_authorization_request_endpoint;
                 
-                // Make PAR request
-                // In a real implementation, this would include DPoP
-                const parResponse = await fetch(parEndpoint, {
+                // Make first PAR request to get DPoP nonce
+                let parResponse = await fetch(parEndpoint, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/x-www-form-urlencoded'
@@ -451,11 +457,44 @@
                 
                 // Get DPoP nonce from response
                 const dpopNonce = parResponse.headers.get('DPoP-Nonce');
+                
+                if (!dpopNonce) {
+                    // If we don't have a nonce, handle error
+                    if (!parResponse.ok) {
+                        const errorBody = await parResponse.text();
+                        throw new Error(`PAR request failed: ${errorBody}`);
+                    }
+                    throw new Error('No DPoP nonce received from server');
+                }
+                
+                // Store nonce for later use
                 sessionStorage.setItem('dpop_nonce', dpopNonce);
                 
+                // Create DPoP proof for the PAR request
+                const dpopProof = await createDPoPProof(parEndpoint, 'POST', dpopNonce);
+                
+                // Make PAR request with DPoP
+                parResponse = await fetch(parEndpoint, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                        'DPoP': dpopProof
+                    },
+                    body: new URLSearchParams({
+                        'response_type': 'code',
+                        'client_id': CLIENT_ID,
+                        'redirect_uri': REDIRECT_URI,
+                        'code_challenge_method': 'S256',
+                        'code_challenge': codeChallenge,
+                        'state': state,
+                        'scope': 'atproto',
+                        'login_hint': handle
+                    })
+                });
+                
                 if (!parResponse.ok) {
-                    const error = await parResponse.text();
-                    throw new Error(`PAR request failed: ${error}`);
+                    const errorBody = await parResponse.text();
+                    throw new Error(`PAR request failed: ${errorBody}`);
                 }
                 
                 const parData = await parResponse.json();
@@ -472,6 +511,7 @@
             } catch (error) {
                 console.error('Error initializing OAuth flow:', error);
                 showError(error.message);
+                hideLoading();
             }
         }
         
@@ -503,39 +543,8 @@
                 const tokenEndpoint = authServerMetadata.token_endpoint;
                 const dpopNonce = sessionStorage.getItem('dpop_nonce');
                 
-                // Restore keypair
-                const publicKeyJwk = JSON.parse(sessionStorage.getItem('dpop_keypair_public'));
-                const privateKeyJwk = JSON.parse(sessionStorage.getItem('dpop_keypair_private'));
-                
-                const publicKey = await crypto.subtle.importKey(
-                    'jwk',
-                    publicKeyJwk,
-                    {
-                        name: 'ECDSA',
-                        namedCurve: 'P-256'
-                    },
-                    true,
-                    ['verify']
-                );
-                
-                const privateKey = await crypto.subtle.importKey(
-                    'jwk',
-                    privateKeyJwk,
-                    {
-                        name: 'ECDSA',
-                        namedCurve: 'P-256'
-                    },
-                    true,
-                    ['sign']
-                );
-                
-                const keypair = {
-                    publicKey,
-                    privateKey
-                };
-                
-                // Create DPoP proof
-                const dpopProof = await createDPoPJWT(keypair, tokenEndpoint, 'POST', dpopNonce);
+                // Create DPoP proof for token request
+                const dpopProof = await createDPoPProof(tokenEndpoint, 'POST', dpopNonce);
                 
                 // Token request
                 const tokenResponse = await fetch(tokenEndpoint, {
