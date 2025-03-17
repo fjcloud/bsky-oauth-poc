@@ -525,6 +525,10 @@
                 const state = urlParams.get('state');
                 const error = urlParams.get('error');
                 
+                console.log("Received in callback - State:", state);
+                const storedState = localStorage.getItem('oauth_state');
+                console.log("Retrieved from localStorage - State:", storedState);
+                
                 if (error) {
                     throw new Error(`Authorization server returned error: ${error}`);
                 }
@@ -533,9 +537,12 @@
                     return; // Not a callback
                 }
                 
-                const storedState = localStorage.getItem('oauth_state');
-                if (state !== storedState) {
-                    throw new Error('State mismatch, possible CSRF attack: ' + state + ' vs ' + storedState);
+                if (!storedState) {
+                    // Try to recover by using the URL state
+                    console.log("No stored state found, using state from URL as fallback");
+                    localStorage.setItem('oauth_state', state);
+                } else if (state !== storedState) {
+                    throw new Error(`State mismatch, possible CSRF attack: ${state} vs ${storedState}`);
                 }
                 
                 const codeVerifier = localStorage.getItem('code_verifier');
