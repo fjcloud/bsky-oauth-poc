@@ -405,10 +405,11 @@
                 
                 // Generate state and PKCE
                 const state = generateRandomString(32);
-                sessionStorage.setItem('oauth_state', state);
+                // Use localStorage instead of sessionStorage to persist across redirects
+                localStorage.setItem('oauth_state', state);
                 
                 const codeVerifier = generateRandomString(64);
-                sessionStorage.setItem('code_verifier', codeVerifier);
+                localStorage.setItem('code_verifier', codeVerifier);
                 
                 const codeChallenge = base64UrlEncode(await sha256(codeVerifier));
                 
@@ -532,16 +533,16 @@
                     return; // Not a callback
                 }
                 
-                const storedState = sessionStorage.getItem('oauth_state');
+                const storedState = localStorage.getItem('oauth_state');
                 if (state !== storedState) {
-                    throw new Error('State mismatch, possible CSRF attack');
+                    throw new Error('State mismatch, possible CSRF attack: ' + state + ' vs ' + storedState);
                 }
                 
-                const codeVerifier = sessionStorage.getItem('code_verifier');
-                const authServerUrl = sessionStorage.getItem('auth_server_url');
-                const authServerMetadata = JSON.parse(sessionStorage.getItem('auth_server_metadata'));
+                const codeVerifier = localStorage.getItem('code_verifier');
+                const authServerUrl = localStorage.getItem('auth_server_url');
+                const authServerMetadata = JSON.parse(localStorage.getItem('auth_server_metadata'));
                 const tokenEndpoint = authServerMetadata.token_endpoint;
-                const dpopNonce = sessionStorage.getItem('dpop_nonce');
+                const dpopNonce = localStorage.getItem('dpop_nonce');
                 
                 // Create DPoP proof for token request
                 const dpopProof = await createDPoPProof(tokenEndpoint, 'POST', dpopNonce);
@@ -568,10 +569,10 @@
                 }
                 
                 const tokenData = await tokenResponse.json();
-                sessionStorage.setItem('access_token', tokenData.access_token);
-                sessionStorage.setItem('refresh_token', tokenData.refresh_token);
-                sessionStorage.setItem('token_type', tokenData.token_type);
-                sessionStorage.setItem('expires_in', tokenData.expires_in);
+                localStorage.setItem('access_token', tokenData.access_token);
+                localStorage.setItem('refresh_token', tokenData.refresh_token);
+                localStorage.setItem('token_type', tokenData.token_type);
+                localStorage.setItem('expires_in', tokenData.expires_in);
                 
                 // Display token data
                 displayTokenData(tokenData.access_token);
@@ -604,7 +605,7 @@
         
         // Check if already logged in
         function checkLoggedIn() {
-            const accessToken = sessionStorage.getItem('access_token');
+            const accessToken = localStorage.getItem('access_token');
             if (accessToken) {
                 displayTokenData(accessToken);
             }
@@ -612,7 +613,7 @@
         
         // Logout function
         function logout() {
-            sessionStorage.clear();
+            localStorage.clear();
             loginSection.style.display = 'block';
             resultContainer.style.display = 'none';
             errorContainer.style.display = 'none';
