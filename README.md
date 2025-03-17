@@ -23,24 +23,85 @@ sequenceDiagram
 
     User->>Browser: Enter Bluesky handle
     Browser->>Browser: Generate state & PKCE
-    Browser->>Bluesky: Resolve handle to DID
-    Browser->>PDS: Get PDS URL from DID
-    Browser->>PDS: Get auth server info
-    Browser->>Bluesky: Make PAR request
+    Browser->>Bluesky: Resolve handle to DID (200 OK)
+    Browser->>PDS: Get PDS URL from DID (200 OK)
+    Browser->>PDS: Get auth server info (200 OK)
+    Browser->>Bluesky: Make PAR request (201 Created)
     Bluesky-->>Browser: Request URI + DPoP nonce
-    Browser->>Bluesky: Redirect to auth endpoint
+    Browser->>Bluesky: Redirect to auth endpoint (302 Found)
     Bluesky->>User: Show login & permission screen
     User->>Bluesky: Approve authorization
-    Bluesky->>Browser: Redirect with auth code
-    Browser->>Bluesky: Exchange code for tokens
+    Bluesky->>Browser: Redirect with auth code (302 Found)
+    Browser->>Bluesky: Exchange code for tokens (400 Bad Request)
     Bluesky-->>Browser: Error: use_dpop_nonce
     Browser->>Browser: Create new DPoP proof with nonce
-    Browser->>Bluesky: Retry with DPoP nonce
+    Browser->>Bluesky: Retry with DPoP nonce (200 OK)
     Bluesky-->>Browser: Access token
     Browser->>Browser: Decode & display token
 ```
 
-### 2. Key Components
+### 2. Step-by-Step Explanation
+
+1. **Enter Bluesky Handle**
+   - **User → Browser**: The user inputs their Bluesky handle (e.g., "username.bsky.social").
+
+2. **Generate State & PKCE**
+   - **Browser → Browser**: Generates a random state string to prevent CSRF attacks and PKCE code verifier/challenge pair for secure code exchange.
+
+3. **Resolve Handle to DID (200 OK)**
+   - **Browser → Bluesky**: Converts the user's handle to a Decentralized Identifier (DID) which is the permanent identifier in the AT Protocol.
+   - **Expected Response**: 200 OK with DID in JSON response.
+
+4. **Get PDS URL from DID (200 OK)**
+   - **Browser → PDS**: Fetches the DID document to find the user's Personal Data Server URL.
+   - **Expected Response**: 200 OK with DID document containing service endpoints.
+
+5. **Get Auth Server Info (200 OK)**
+   - **Browser → PDS**: Retrieves OAuth metadata from the PDS to find the authorization server.
+   - **Expected Response**: 200 OK with OAuth protected resource metadata.
+
+6. **Make PAR Request (201 Created)**
+   - **Browser → Bluesky**: Makes a Pushed Authorization Request to pre-register the auth parameters.
+   - **Expected Response**: 201 Created with request_uri and DPoP-Nonce header.
+
+7. **Request URI + DPoP Nonce**
+   - **Bluesky → Browser**: Returns a request URI and DPoP nonce for the next step.
+
+8. **Redirect to Auth Endpoint (302 Found)**
+   - **Browser → Bluesky**: Redirects user to Bluesky's authorization page with the request URI.
+   - **Expected Response**: 302 Found redirect to authorization UI.
+
+9. **Show Login & Permission Screen**
+   - **Bluesky → User**: Displays the authentication UI to the user.
+
+10. **Approve Authorization**
+    - **User → Bluesky**: User logs in (if needed) and approves the authorization request.
+
+11. **Redirect with Auth Code (302 Found)**
+    - **Bluesky → Browser**: Redirects back to the app with an authorization code.
+    - **Expected Response**: 302 Found redirect to the redirect_uri with code parameter.
+
+12. **Exchange Code for Tokens (400 Bad Request)**
+    - **Browser → Bluesky**: Attempts to exchange the auth code for tokens.
+    - **Expected Response**: 400 Bad Request with use_dpop_nonce error.
+
+13. **Error: use_dpop_nonce**
+    - **Bluesky → Browser**: Server requires a DPoP proof with the current nonce.
+
+14. **Create New DPoP Proof with Nonce**
+    - **Browser → Browser**: Generates a cryptographically signed JWT with the required nonce.
+
+15. **Retry with DPoP Nonce (200 OK)**
+    - **Browser → Bluesky**: Retries the token request with proper DPoP proof.
+    - **Expected Response**: 200 OK with access and refresh tokens.
+
+16. **Access Token**
+    - **Bluesky → Browser**: Server returns a JWT access token.
+
+17. **Decode & Display Token**
+    - **Browser → Browser**: Decodes and displays the JWT token information.
+
+### 3. Key Components
 
 #### Identity Resolution
 - Resolves Bluesky handles to DIDs
@@ -122,11 +183,16 @@ eyJ0eXAiOiJhdCtqd3QiLCJhbGciOiJFUzI1NksifQ.eyJhdWQiOiJkaWQ6d2ViOmluay...
 
 When decoded, it contains:
 
+**Header:**
 ```json
 {
   "typ": "at+jwt",
   "alg": "ES256K"
 }
+```
+
+**Payload:**
+```json
 {
   "aud": "did:web:user-pds-url",
   "iat": 1742226916,
